@@ -41,7 +41,6 @@ dialogue as `[human]: ...`.
 | `run_a_log.txt` | run with an ambiguous request: question, reply, next message |
 | `run_b_log.txt` | run with a hard request: refused once, then a changed step accepted |
 
-The Silverbox scripts of Task 5 (`data.py`, `train.py`, `evaluate.py`, `model.py`, `integrator.py`) are unchanged.
 
 ## Setup
 
