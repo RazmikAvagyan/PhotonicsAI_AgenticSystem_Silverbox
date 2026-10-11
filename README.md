@@ -1,3 +1,70 @@
+# Agentic system for the Silverbox Neural-ODE task
+
+A LangGraph system of four roles (orchestrator, scientist, general agent, executor) that plans, writes, runs and
+reports a Neural-ODE fit of the Silverbox benchmark. The orchestrator can also stop the run and ask the person
+(human in the loop). Models: Gemini through `langchain-google-genai` (`gemini-3.8-flash`, temperature 0).
+
+## How it works
+
+- The four roles are nodes of one `StateGraph` and share one state, the dialogue (a list of turns written as `[Role]: text`).
+- After every specialist turn the turn returns to the orchestrator. The orchestrator is one model call that reads the
+  dialogue and returns the next destination, an instruction and a one-sentence reason.
+- Only the executor has a coding tool. It writes each script as `attempt_N.py` into `generated_scripts/run_<date>_<time>/`,
+  runs it with a time limit of 300 s, and returns the exit code, standard output and standard error.
+- The run stops on `finish` or after 8 orchestrator decisions. `finish` is accepted only after an executor turn with
+  exit code 0 and a printed `Test RMSE`.
+
+## Human in the loop
+
+The orchestrator has a fifth destination, `human`. One model call returns
+`Next role / Instruction / Question / Kind / After / Reason`. It returns `human` in two cases:
+
+- **ambiguous** request: more than one reading, and the readings lead to different roles or a different reported number (checked first);
+- **hard** decision: the next step runs the coding tool, overwrites a result on disk, or ends the dialogue and reports a measurement.
+
+The stop is a LangGraph `interrupt()` in the node `human`. The graph is compiled with an `InMemorySaver`
+checkpointer, and `main.py` resumes the same thread with `Command(resume=reply)`. The reply is appended to the
+dialogue as `[human]: ...`.
+
+- Ambiguous question: the turn returns to the orchestrator, which reads the answer.
+- Hard question, reply starting with `y`: the saved step (`executor` or `finish`) runs.
+- Hard question, any other reply: the step does **not** run, a `[System] ... did NOT run` turn is added, and the turn returns to the orchestrator.
+
+## Files
+
+| File | Content |
+|---|---|
+| `main.py` | task text, graph, pause-and-resume loop, `dialogue_log.txt` |
+| `agents.py` | prompts and model calls of the four roles (orchestrator prompt with the `human` rules) |
+| `nodes.py` | graph nodes, `human_step`, parsing of the orchestrator reply, finish guard |
+| `tools.py` | the coding tool used by the executor |
+| `run_a_log.txt` | run with an ambiguous request: question, reply, next message |
+| `run_b_log.txt` | run with a hard request: refused once, then a changed step accepted |
+
+The Silverbox scripts of Task 5 (`data.py`, `train.py`, `evaluate.py`, `model.py`, `integrator.py`) are unchanged.
+
+## Setup
+
+1. Python 3.10 with `langgraph`, `langchain-google-genai`, `python-dotenv`, `numpy`, `scipy`, `matplotlib`, `torch`.
+2. A file `.env` with `API_KEY = <your Gemini key>` (not committed).
+3. `SNLS80mV.mat` in the project folder.
+
+## Run
+
+```
+python main.py "How good is the Silverbox model?"
+```
+
+or run `python main.py` and type the request at the prompt. When the program prints `GRAPH PAUSED` and a question,
+type the reply at `Your reply:` (for a hard question, `yes` accepts, anything else refuses). The dialogue is printed
+turn by turn and written to `dialogue_log.txt`. The generated scripts and plots are saved in
+`generated_scripts/run_<date>_<time>/`.
+
+
+---
+
+## Earlier work (Homework 1)
+
 # Task 6: Agentic System for the Silverbox Neural-ODE Task
 
 ## Overview
