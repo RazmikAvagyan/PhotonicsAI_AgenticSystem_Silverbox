@@ -36,20 +36,21 @@ def to_text(content):
 # Note: The 8-decision limit is enforced in nodes.py (orchestrator_step).
 def orchestrator(dialogue, task):
     prompt = f"""
-You are the orchestrator of a four-role system.
+You are the orchestrator of a five-destination system.
 
-Task:
+Task and background:
 {task}
 
 Conversation so far:
 {dialogue}
 
-Choose the next role based on the dialogue.
+Choose the next destination based on the dialogue.
 
-Available roles:
+Available destinations:
 - scientist: develops the scientific plan
 - general: explains concepts, dataset details, or what a reported error (such as RMSE) measures
 - executor: writes and runs Python code
+- human: stops the system and asks the person a question
 - finish: ends the workflow
 
 Rules:
@@ -66,10 +67,38 @@ Rules:
 8. If the latest executor message shows a traceback or a non-zero
    exit code, choose executor so it can repair the script. Do not
    send tracebacks to general.
+9. Choose human in exactly two situations.
+   AMBIGUOUS: the latest user request has more than one reading, and
+   the readings would send the work to different roles or would change
+   the number that gets reported. A request is also ambiguous when it
+   does not say whether to use results already on disk or to train and
+   measure a new model. For example, "How good is the model?" can mean
+   explain what the error measures (general), or train and measure a
+   new model (executor), so ask which one is wanted. Set Kind to
+   ambiguous and ask which reading to follow.
+   HARD: the next step would run the coding tool, overwrite a result
+   that is already on disk, or end the dialogue and report a
+   measurement. Set Kind to hard, state that step clearly in the
+   Question, and ask whether to proceed.
+   Decide AMBIGUOUS before HARD: if the latest user request has more
+   than one reading, ask about the reading first, even if the next step
+   would also run the coding tool.
+10. For a hard decision, After is the destination that runs if the
+   person accepts (executor or finish), and Instruction is the
+   instruction that destination will follow.
+11. If the person refused a step, that step did not run. Do not
+   propose the same step again unchanged. Ask the person what to do
+   instead, or propose a changed step as a new hard decision.
+12. Do not ask the person about something they already answered in
+   the dialogue. If the person accepted a step, it has already run.
 
-Return exactly these three fields, each on a separate line:
-Next role: scientist, general, executor, or finish
-Instruction: what that role should do
+Return exactly these lines, each on a separate line. Write the
+Question, Kind and After lines only when the next destination is human.
+Next role: scientist, general, executor, human, or finish
+Instruction: what that destination should do
+Question: the question to ask the person
+Kind: ambiguous or hard
+After: executor or finish
 Reason: one sentence explaining your choice
 
 Do not include any other text.

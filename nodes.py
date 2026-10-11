@@ -1,3 +1,5 @@
+from langgraph.types import interrupt
+
 from agents import (
     orchestrator,
     scientist,
@@ -37,6 +39,7 @@ def orchestrator_step(state):
     role = "scientist"
     instruction = "Plan the task."
     note = ""
+    question, kind, after = "", "ambiguous", "executor"
 
     for line in response.splitlines():
         line = line.strip().replace("*", "")
@@ -47,13 +50,22 @@ def orchestrator_step(state):
         elif line.lower().startswith("instruction:"):
             instruction = line.split(":", 1)[1].strip()
 
+        elif line.lower().startswith("question:"):
+            question = line.split(":", 1)[1].strip()
+
+        elif line.lower().startswith("kind:"):
+            kind = line.split(":", 1)[1].strip().lower()
+
+        elif line.lower().startswith("after:"):
+            after = line.split(":", 1)[1].strip().lower()
+
     # Standardize role names.
-    for name in ["scientist", "general", "executor", "finish"]:
+    for name in ["scientist", "general", "executor", "human", "finish"]:
         if name in role:
             role = name
             break
 
-    if role not in ["scientist", "general", "executor", "finish"]:
+    if role not in ["scientist", "general", "executor", "human", "finish"]:
         role = "scientist"
 
     # A traceback or non-zero exit code goes to the executor, not general.
@@ -99,13 +111,69 @@ def orchestrator_step(state):
             f"printed a test RMSE yet, so the turn goes to the {role}.]"
         )
 
+    # Details of a human stop (used only when role is "human").
+    kind = "hard" if "hard" in kind else "ambiguous"
+    after = "finish" if "finish" in after else "executor"
+
+    # Nothing can be reported before a successful run printed a test RMSE.
+    if role == "human" and kind == "hard" and after == "finish" and not has_test_rmse(state["dialogue"]):
+        after = "executor"
+
+    if role == "human" and not question:
+        question = "Your request can be read in more than one way. Which reading should I follow?"
+
     return {
         "dialogue": [f"[Orchestrator]: {response}{note}"],
         "decision_count": state["decision_count"] + 1,
         "last_decision": {
             "role": role,
-            "instruction": instruction
+            "instruction": instruction,
+            "question": question,
+            "kind": kind,
+            "after": after
         }
+    }
+
+
+def human_step(state):
+    # Pause the graph (LangGraph interrupt) and wait for the person's reply.
+    # The value is shown to the person. When the same thread is resumed,
+    # interrupt() returns the reply.
+    decision = state["last_decision"]
+
+    reply = interrupt({
+        "kind": decision["kind"],
+        "question": decision["question"]
+    })
+
+    turns = [f"[human]: {reply}"]
+
+    # Ambiguous request: the orchestrator reads the reply and decides again.
+    if decision["kind"] == "ambiguous":
+        return {
+            "dialogue": turns,
+            "last_decision": {"role": "orchestrator", "instruction": ""}
+        }
+
+    # Hard decision accepted (the reply starts with "y"): the step runs now.
+    if reply.strip().lower().startswith("y"):
+        return {
+            "dialogue": turns,
+            "last_decision": {
+                "role": decision["after"],
+                "instruction": decision["instruction"]
+            }
+        }
+
+    # Hard decision refused: the step does not run, the turn returns to the orchestrator.
+    turns.append(
+        f"[System]: The person refused. The step '{decision['after']}: "
+        f"{decision['instruction']}' did NOT run. No script was written or run, "
+        f"and nothing was overwritten or reported."
+    )
+    return {
+        "dialogue": turns,
+        "last_decision": {"role": "orchestrator", "instruction": ""}
     }
 
 

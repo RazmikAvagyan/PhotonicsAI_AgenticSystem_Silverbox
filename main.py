@@ -1,33 +1,30 @@
 import operator
+import sys
 from typing import TypedDict, Annotated
 
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
-from nodes import orchestrator_step, scientist_step, general_step, executor_step, has_test_rmse
+from nodes import (
+    orchestrator_step, scientist_step, general_step, executor_step, human_step, has_test_rmse
+)
 
+# The Silverbox facts that all roles see. The request typed by the user is added after them.
 TASK = """
-Complete Task 5: a Neural ODE model for the Silverbox dataset.
-
+Background: the Silverbox work from Homework 1 (a Neural ODE model of the Silverbox oscillator).
 Data: SNLS80mV.mat in the working directory. V1 is the input u, V2 is the output y,
-fs = 610.35 Hz, dt = 1/fs. Use the excerpt [42650:46746] and subtract the mean of u and of y.
-Train on the first 3072 samples, test on the last 1024.
-
-The circuit obeys y'' + a*y' + b*y + c*y^3 = g*u(t). Do not fit a, b, c, g directly.
-Model the acceleration with a fully connected PyTorch network:
-    y' = v,   v' = alpha_theta(y, v, u)
-Use RK4 with step dt, driven by the measured u.
-
-Test with ONE free run over the whole excerpt: start at the first sample with the measured position and
-a finite-difference velocity, integrate through the training samples and on into the test samples.
-The rollout may read u but never the measured y.
-
-The script must finish within 5 minutes on a CPU, save the test plot with plt.savefig (no plt.show()),
-and print these two lines exactly, in volts:
+fs = 610.35 Hz, dt = 1/fs. Excerpt [42650:46746], mean of u and of y subtracted.
+First 3072 samples = training, last 1024 = test.
+Model: y' = v, v' = alpha_theta(y, v, u), a fully connected PyTorch network, RK4 with step dt.
+Metric: ONE free run over the whole excerpt from sample 0 (measured position and finite-difference
+velocity, reads only u). Train RMSE on the 3072 training samples, test RMSE on the 1024 test samples.
+Predicting zero gives about 0.06 V on the test samples.
+If a script is written, it must finish within 5 minutes on a CPU, save plots with plt.savefig
+(no plt.show()), and print these two lines exactly, in volts:
     Train RMSE: <value>
     Test RMSE: <value>
-
-The Scientist plans, the Executor writes and runs the script. The Orchestrator chooses roles from the
-dialogue, and finishes only after a successful run printed a test RMSE, or after 8 decisions.
+Results of earlier runs are already on disk (generated_scripts/ and the saved plots).
 """
 
 
@@ -40,7 +37,14 @@ class State(TypedDict):
 
 def choose_next(state):
     role = state["last_decision"]["role"]
-    return role if role in ["scientist", "general", "executor"] else END
+    return role if role in ["scientist", "general", "executor", "human"] else END
+
+
+def after_human(state):
+    # human_step stored where the turn goes: back to the orchestrator,
+    # or on to the step the person accepted (the executor, or the end).
+    role = state["last_decision"]["role"]
+    return role if role in ["orchestrator", "executor"] else END
 
 
 graph = StateGraph(State)
@@ -48,29 +52,54 @@ graph.add_node("orchestrator", orchestrator_step)
 graph.add_node("scientist", scientist_step)
 graph.add_node("general", general_step)
 graph.add_node("executor", executor_step)
+graph.add_node("human", human_step)
 
 graph.add_edge(START, "orchestrator")
 graph.add_conditional_edges("orchestrator", choose_next)
+graph.add_conditional_edges("human", after_human)
 for role in ["scientist", "general", "executor"]:
     graph.add_edge(role, "orchestrator")  # the turn goes back to the orchestrator
-app = graph.compile()
+# The checkpointer stores the state of the thread, so a paused graph can be resumed.
+app = graph.compile(checkpointer=InMemorySaver())
 
 
 if __name__ == "__main__":
+    # The request comes from the command line, or is typed when the program asks.
+    request = " ".join(sys.argv[1:]) or input("Your request: ")
+
     start = {
-        "task": TASK,
-        "dialogue": ["[User]: " + TASK.strip()],
+        "task": TASK + "\nUser request:\n" + request,
+        "dialogue": ["[User]: " + request],
         "decision_count": 0,
         "last_decision": {"role": "orchestrator", "instruction": ""},
     }
+    config = {"configurable": {"thread_id": "run-1"}, "recursion_limit": 60}
 
     shown = 0
     state = start
+    graph_input = start
     try:
-        for state in app.stream(start, config={"recursion_limit": 60}, stream_mode="values"):
-            for turn in state["dialogue"][shown:]:
-                print("=" * 70 + "\n" + turn + "\n")
-            shown = len(state["dialogue"])
+        while True:
+            # Run (or resume) the thread until it finishes or pauses.
+            for state in app.stream(graph_input, config, stream_mode="values"):
+                for turn in state["dialogue"][shown:]:
+                    print("=" * 70 + "\n" + turn + "\n")
+                shown = len(state["dialogue"])
+
+            snapshot = app.get_state(config)
+            if not snapshot.next:  # nothing left to run: the graph has finished
+                break
+
+
+            # The graph is paused at the human node: show the question, wait for the reply.
+            ask = snapshot.tasks[0].interrupts[0].value
+            print("#" * 70)
+            print(f"GRAPH PAUSED ({ask['kind']} decision). Question:")
+            print(ask["question"])
+            if ask["kind"] == "hard":
+                print("(type yes to accept, anything else refuses)")
+            reply = input("Your reply: ")
+            graph_input = Command(resume=reply)  # resume the SAME thread with the reply
     except Exception as error:
         # For example the API quota ran out: keep what was produced so far.
         print("=" * 70)
