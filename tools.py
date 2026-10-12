@@ -57,3 +57,33 @@ def write_and_run_python(code):
             "stdout": "",
             "stderr": "Execution timed out after 5 minutes."
         }
+
+
+# Focusing tool: the executor calls it with the settings it chose.
+from bench import run_focusing
+
+# name: (default, smallest, largest)
+FOCUS_SETTINGS = {
+    "macropixel": (4, 1, 16),         # micromirrors per macropixel side (must be 1, 2, 4, 8 or 16)
+    "focus_size": (1, 1, 5),          # side of the focus square, in camera pixels
+    "background_width": (4, 1, 8),    # thickness of the background ring, in camera pixels
+    "n_regions": (4, 2, 8),           # number of background regions
+    "iterations": (1000, 50, 20000),  # number of flip-and-measure steps
+    "flips": (1, 1, 8),               # macropixels flipped in one step
+    "seed": (0, 0, 10**6),            # random start pattern and noise
+}
+
+
+def run_focusing_tool(settings):
+    # Use the default for a missing setting and stay inside the allowed range.
+    values = {}
+    for name, (default, low, high) in FOCUS_SETTINGS.items():
+        values[name] = min(max(int(settings.get(name, default)), low), high)
+    if values["macropixel"] not in (1, 2, 4, 8, 16):
+        values["macropixel"] = 4
+
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    number = len(list(RUN_DIR.glob("focus_*.png"))) + 1
+    result = run_focusing(save_to=RUN_DIR / f"focus_{number}.png", **values)
+    result["settings"] = values
+    return result

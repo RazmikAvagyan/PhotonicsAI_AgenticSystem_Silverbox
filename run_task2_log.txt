@@ -1,0 +1,106 @@
+[User]: Focus the beam.
+
+[Orchestrator]: Next role: scientist
+Instruction: Outline a plan for focusing experiments, proposing parameter values for macropixel size, focus size, background width, number of regions, iterations, and flips.
+Reason: The workflow has just begun and requires an experimental plan from the scientist before any execution can take place.
+
+[Scientist]: ### 1. Physical Principles of Image Formation
+
+In this optical bench, the digital micromirror device (DMD) modulates only the amplitude (on/off states, 1 or 0) of the incident field $E_{\text{in}}$. The scattered output field at the camera is given by the linear transmission relation $E_{\text{out}} = T E_{\text{in}}$, where $T$ represents the complex transmission matrix of the scattering medium. The camera measures optical intensity with additive noise:
+
+$$I = |E_{\text{out}}|^2 + \text{noise} = |T E_{\text{in}}|^2 + \text{noise}$$
+
+Because multiple scattering mixes the input modes with random phase shifts and amplitudes, a random binary pattern on the DMD causes random constructive and destructive interference across the camera, producing a fully developed speckle pattern. However, because $T$ is deterministic, selecting an optimal subset of DMD mirrors can align the phases of the transmitted partial waves at a target camera location so that they interfere constructively, forming a bright focal spot that stands out above the surrounding speckle.
+
+---
+
+### 2. Definition of Enhancement
+
+Enhancement ($\eta$) is defined as the mean intensity in the designated focus region divided by the mean intensity across the proximal background regions:
+
+$$\eta = \frac{\langle I_{\text{focus}} \rangle}{\langle I_{\text{background}} \rangle}$$
+
+An enhancement of $\eta \approx 1$ corresponds to a uniform random speckle pattern, whereas $\eta \gg 1$ indicates successful beam focusing.
+
+---
+
+### 3. Parameters and Trade-offs
+
+- **Macropixel Size (`macropixel`):** Mirror elements are grouped into $N \times N$ blocks. 
+  - *Large macropixels* reduce the total number of control degrees of freedom; the algorithm converges quickly in few iterations, but the theoretical peak enhancement is low because the field cannot be finely shaped.
+  - *Small macropixels* yield a vastly larger number of independent control modes, enabling much higher theoretical enhancement (which scales roughly with the number of controllable modes). However, exploring this high-dimensional space requires significantly more iterations (typically $\ge 20$ iterations per macropixel).
+- **Focus Size (`focus_size`):** Defines a square of $\text{focus\_size} \times \text{focus\_size}$ camera pixels. Since a speckle grain is approximately 1 pixel across, enlarging the focus region forces the algorithm to maximize intensity over multiple uncorrelated speckle grains simultaneously, which dilutes constructive interference and reduces measured enhancement. Setting `focus_size = 1` maximizes enhancement.
+- **Background Width (`background_width`) and Number of Regions (`n_regions`):** Define the spatial extent and partition of the reference area surrounding the focus. Adequate width and region count provide an unbiased, statistically robust estimate of local background intensity, preventing local speckle fluctuations from skewing the metric.
+- **Number of Iterations (`iterations`):** Sets the search budget. Too few iterations leave the optimization prematurely converged in a suboptimal state; sufficient iterations allow steady accumulation of beneficial flips.
+- **Flips per Step (`flips`):** The number of macropixels toggled at each step. Flipping 1 pixel at a time ensures a smooth, monotonic hill-climbing search with high acceptance stability, whereas flipping multiple pixels accelerates phase-space exploration early on but risks rejecting good individual transitions in noisy regimes.
+- **Camera Noise:** Additive detection noise means repeated measurements of identical patterns produce slightly different readings. A change in enhancement is only kept if the measured improvement overcomes this noise floor.
+
+---
+
+### 4. Experimental Plan
+
+We will evaluate the trade-offs across macropixel sizes (large, medium, small) with proportional iteration budgets, followed by testing the sensitivity to step size (`flips`).
+
+1. **Experiment 1 (Large Macropixels / Fast baseline):**
+   - **Settings:** `macropixel=16`, `focus_size=1`, `background_width=3`, `n_regions=4`, `iterations=300`, `flips=1`, `seed=42`
+   - **Reason:** Provides a rapid baseline with few degrees of freedom. Demonstrates quick convergence to a modest enhancement.
+
+2. **Experiment 2 (Medium Macropixels):**
+   - **Settings:** `macropixel=8`, `focus_size=1`, `background_width=3`, `n_regions=4`, `iterations=1200`, `flips=1`, `seed=42`
+   - **Reason:** Increases the number of degrees of freedom fourfold compared to Experiment 1. We allocate 1200 iterations to allow the algorithm to exploit the finer spatial control and achieve higher enhancement.
+
+3. **Experiment 3 (Small Macropixels / High Enhancement):**
+   - **Settings:** `macropixel=4`, `focus_size=1`, `background_width=3`, `n_regions=4`, `iterations=5000`, `flips=1`, `seed=42`
+   - **Reason:** Tests fine spatial control with a large iteration budget (>20 iterations per macropixel). Should yield the highest peak enhancement among the macropixel sweep.
+
+4. **Experiment 4 (Multi-flip Perturbation on Medium/Small Configuration):**
+   - **Settings:** `macropixel=8`, `focus_size=1`, `background_width=3`, `n_regions=4`, `iterations=1200`, `flips=2`, `seed=42`
+   - **Reason:** Directly compares the effect of flipping multiple macropixels (`flips=2` vs `flips=1` in Experiment 2) to see whether larger perturbations accelerate discovery or hinder convergence in the presence of noise.
+
+[Orchestrator]: Next role: executor
+Instruction: Run an experiment using the focusing tool with the following settings: macropixel=16, focus_size=1, background_width=3, n_regions=4, iterations=300, flips=1, seed=42.
+Reason: The scientist has provided an experimental plan, so the executor must now run the first experiment to establish a baseline enhancement.
+
+[Executor]: Executor called run_focusing
+Settings: {"macropixel": 16, "focus_size": 1, "background_width": 3, "n_regions": 4, "iterations": 300, "flips": 1, "seed": 42}
+Enhancement: 2.56
+Start enhancement (random pattern): 1.84
+Macropixels: 4
+Camera images: /Users/razmik/Documents/PhotonicsAI_Task6_AgenticSystem/generated_scripts/run_20261012_204001/focus_1.png
+
+[Orchestrator]: Next role: executor
+Instruction: Run an experiment using the focusing tool with the following settings: macropixel=8, focus_size=1, background_width=3, n_regions=4, iterations=1200, flips=1, seed=42.
+Reason: Experiment 1 has finished, so the executor needs to run Experiment 2 from the scientist's plan to evaluate medium macropixels with an increased iteration count.
+
+[Executor]: Executor called run_focusing
+Settings: {"macropixel": 8, "focus_size": 1, "background_width": 3, "n_regions": 4, "iterations": 1200, "flips": 1, "seed": 42}
+Enhancement: 8.36
+Start enhancement (random pattern): 1.12
+Macropixels: 16
+Camera images: /Users/razmik/Documents/PhotonicsAI_Task6_AgenticSystem/generated_scripts/run_20261012_204001/focus_2.png
+
+[Orchestrator]: Next role: executor
+Instruction: Run an experiment using the focusing tool with the following settings: macropixel=4, focus_size=1, background_width=3, n_regions=4, iterations=5000, flips=1, seed=42.
+Reason: Experiment 2 has concluded successfully, so the executor needs to proceed with Experiment 3 from the scientist's plan to evaluate smaller macropixels with a larger iteration budget.
+
+[Executor]: Executor called run_focusing
+Settings: {"macropixel": 4, "focus_size": 1, "background_width": 3, "n_regions": 4, "iterations": 5000, "flips": 1, "seed": 42}
+Enhancement: 27.57
+Start enhancement (random pattern): 2.05
+Macropixels: 64
+Camera images: /Users/razmik/Documents/PhotonicsAI_Task6_AgenticSystem/generated_scripts/run_20261012_204001/focus_3.png
+
+[Orchestrator]: Next role: executor
+Instruction: Run an experiment using the focusing tool with the following settings: macropixel=8, focus_size=1, background_width=3, n_regions=4, iterations=1200, flips=2, seed=42.
+Reason: Three experiments have completed, so the executor must run the fourth experiment from the scientist's plan to test the effect of flipping two macropixels per iteration.
+
+[Executor]: Executor called run_focusing
+Settings: {"macropixel": 8, "focus_size": 1, "background_width": 3, "n_regions": 4, "iterations": 1200, "flips": 2, "seed": 42}
+Enhancement: 8.43
+Start enhancement (random pattern): 1.12
+Macropixels: 16
+Camera images: /Users/razmik/Documents/PhotonicsAI_Task6_AgenticSystem/generated_scripts/run_20261012_204001/focus_4.png
+
+[Orchestrator]: Next role: finish
+Instruction: Conclude the workflow as four experiments with different settings have completed, identifying the best settings as macropixel=4, focus_size=1, background_width=3, n_regions=4, iterations=5000, flips=1, seed=42 which achieved the highest enhancement of 27.57.
+Reason: At least four experiments with distinct settings have successfully run, and the optimal settings and resulting enhancement have been determined.

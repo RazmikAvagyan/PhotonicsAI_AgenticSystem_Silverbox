@@ -1,114 +1,94 @@
-# Task 6: Agentic System for the Silverbox Neural-ODE Task
+# Agentic system: Silverbox (Homework 1) and focusing through a simulated bench (Homework 2, Task 2)
 
-## Overview
+A LangGraph system of four roles (orchestrator, scientist, general agent, executor). In Homework 1, Task 6 the roles plan,
+write, run and report a Neural-ODE fit of the Silverbox benchmark (branch `main`). This branch (`hw2-task2`) adds a
+simulated optical bench and a focusing tool, and the agent uses them to focus a beam through a scattering medium.
+Models: Gemini through `langchain-google-genai` (`gemini-3.8-flash`, temperature 0).
 
-This project is a system of four roles built with LangGraph. It is given Task 5 (a Neural-ODE model of the Silverbox oscillator) and tries to solve it: a scientist plans, an executor writes and runs the script, and an orchestrator decides who speaks next.
+The human-in-the-loop work of Task 1 is on the branch `hw2-task1`.
 
-The four roles are the nodes of one `StateGraph`. They share one state, the dialogue, in which every turn is stored as `[Role]: text`. After a specialist node runs, an edge returns the turn to the orchestrator, so the next speaker sees the new message.
+## The simulated bench (`bench.py`)
 
-```
-START -> orchestrator --(model decision)--> scientist | general | executor | END
-              ^                                  |          |          |
-              +----------------------------------+----------+----------+
-```
+Laser, DMD, scattering medium, camera.
 
-## Roles
+- The DMD has 32 x 32 micromirrors and changes only the amplitude of the input field: a mirror is on (1) or off (0).
+- The scattering medium is one complex transmission matrix `T` (1024 x 1024, random entries, fixed seed), so every
+  experiment sees the same medium.
+- The camera has 32 x 32 pixels and records `|T E_in|^2 * (1 + 0.05 * e)`, with `e` a standard normal number per pixel.
+  A second shot of the same pattern is therefore not a copy of the first.
 
-- **Orchestrator** - reads the dialogue and returns three fields: `Next role`, `Instruction` and `Reason`. The decision is a call to a Gemini model, not a keyword table or a fixed order. It writes no theory and no code and has no tool. It stops on `finish` or after 8 decisions, and it may finish only after an executor turn shows a script that ran (exit code 0) and printed a numeric `Test RMSE`.
-- **Scientist** - writes the differential equation, the scaled state equations, the network, the training, the RK4 step, the free-run test, the RMSE and plot, and numbered implementation steps. Its prompt contains numerical advice: the signals span several orders of magnitude (y about 0.05, velocity about 20, acceleration about 10^4), so they should be scaled by their training standard deviations and integrated in a scaled time. It has no tool and does not claim a measured number unless the executor printed it.
-- **General agent** - answers high-level questions (what a record is, what a term means, what an error measures). It has no tool and does not write the fitting plan.
-- **Executor** - the only role with the coding tool. It writes a complete Python script for the latest scientist plan, runs it, and returns the result or the traceback. The script prints a short summary of the run (network, optimizer, epochs, loss, time) before the two RMSE lines. After a failure the executor writes a corrected script, starting from its previous script, with the same plan.
+## The focusing tool (`tools.py`, `run_focusing_tool`)
 
-## Coding tool
+The search follows the algorithm of the assignment:
 
-`write_and_run_python` in `tools.py` does two things:
+1. Divide the DMD into macropixels (blocks of `macropixel x macropixel` mirrors) and start from a random pattern.
+2. After each transmission, read the intensity in the focus region (a `focus_size x focus_size` square at the centre of
+   the camera) and in the proximal background (a ring of width `background_width`, one pixel away from the focus,
+   split into `n_regions` sectors).
+3. Enhancement = mean intensity in the focus / mean of the mean intensities of the background regions.
+4. Flip `flips` random macropixels, take a new shot, keep the flip only if the enhancement increased, repeat `iterations` times.
 
-1. Writes the script as a new numbered file, `attempt_N.py`, into `generated_scripts/run_<date>_<time>/`. This working directory is created once per run, and a copy of `SNLS80mV.mat` is placed in it.
-2. Runs the file with a time limit of 5 minutes and returns the file name, the exit code, the standard output and the standard error. A timeout is reported with exit code `-1`.
+The reported enhancement is computed from a new camera shot of the final pattern. The tool saves one figure per run
+(random-pattern image, image after the search, enhancement during the search) and returns the enhancement.
+
+| Setting | Allowed values | Default |
+|---|---|---|
+| `macropixel` | 1, 2, 4, 8, 16 | 4 |
+| `focus_size` | 1 to 5 | 1 |
+| `background_width` | 1 to 8 | 4 |
+| `n_regions` | 2 to 8 | 4 |
+| `iterations` | 50 to 20000 | 1000 |
+| `flips` | 1 to 8 | 1 |
+| `seed` | 0 to 1000000 | 0 |
+
+## How the agent works
+
+- The only request typed during the run is `Focus the beam.` The agent chooses all settings.
+- The orchestrator asks the scientist for a plan (physics, effect of each setting, four experiments). It then gives the
+  settings of one experiment at a time to the executor.
+- The executor is the only role that calls the tool. It writes the settings of one experiment as a JSON object, and the
+  tool returns the enhancement.
+- The orchestrator finishes only after at least 4 experiments with different settings have returned an enhancement, or after
+  12 decisions. It then names the best settings.
+
+## Result of the run in this repository
+
+| Run | macropixel | focus_size | background_width | n_regions | iterations | flips | seed | Enhancement |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 16 | 1 | 3 | 4 | 300 | 1 | 42 | 2.56 |
+| 2 | 8 | 1 | 3 | 4 | 1200 | 1 | 42 | 8.36 |
+| 3 | 4 | 1 | 3 | 4 | 5000 | 1 | 42 | 27.57 |
+| 4 | 8 | 1 | 3 | 4 | 1200 | 2 | 42 | 8.43 |
 
 ## Files
 
-- `main.py` - builds the graph, gives it the Task 5 text, prints the dialogue turn by turn, and writes `dialogue_log.txt` (also if the run stops early, for example when the API quota runs out).
-- `agents.py` - the four prompts and the Gemini model; the executor writes the script and calls the coding tool.
-- `nodes.py` - the graph nodes: reads the orchestrator decision, enforces the 8-decision limit and the finish rule, and checks the printed test RMSE.
-- `tools.py` - the coding tool.
-- `dialogue_log.txt` - the full dialogue of the validation run.
-- `generated_scripts/run_20261010_151626/` - the script written by the executor in the validation run (`attempt_1.py`) and the plot it saved (`silverbox_neural_ode_free_run.png`).
-- `SNLS80mV.mat` - the Silverbox dataset (Wigren and Schoukens, https://www.nonlinearbenchmark.org/). It must be in the project folder.
+| File | Content |
+|---|---|
+| `bench.py` | simulated bench, regions, enhancement, focusing search and figure |
+| `tools.py` | `run_focusing_tool` (limits on the settings) and the coding tool of Homework 1 |
+| `agents.py` | prompts and model calls of the four roles (executor returns the settings as JSON) |
+| `nodes.py` | graph nodes, parsing of the orchestrator reply, finish guard (at least 4 experiments) |
+| `main.py` | task text, graph, run loop, table of experiments, `--resume` |
+| `run_task2_log.txt` | dialogue of the run above |
+| `experiments_table.md` | table of the experiments of the run above |
+| `generated_scripts/run_20261012_204001/focus_1.png` to `focus_4.png` | camera images of the four runs |
+| `videos/task2_focusing_run.mp4` | screen recording of the run |
 
-## Requirements
+The Silverbox scripts of Homework 1 (`data.py`, `train.py`, `evaluate.py`, `model.py`, `integrator.py`) are unchanged.
 
-Python 3.10, with:
+## Setup
 
-```bash
-pip install langgraph langchain-google-genai python-dotenv numpy scipy matplotlib torch
-```
+1. Python 3.10 with `langgraph`, `langchain-google-genai`, `python-dotenv`, `numpy`, `matplotlib`.
+2. A file `.env` with `API_KEY = <your Gemini key>` (not committed).
 
-The generated scripts use NumPy, SciPy, Matplotlib and PyTorch, so install them in the same environment. With a PyTorch version built for NumPy 1.x, use `numpy<2`.
-
-## How to run
-
-1. Create a file named `.env` in the project folder with your Gemini key (do not commit this file):
-
-   ```
-   API_KEY=your_key_here
-   ```
-
-2. Put `SNLS80mV.mat` in the project folder.
-3. Run:
-
-   ```bash
-   python main.py
-   ```
-
-A run needs about 5 to 16 Gemini requests. The free tier of the Gemini API allows only about 20 requests per model and day, so avoid test runs before the real one.
-
-## Validation on Task 5
-
-The system was given the text of Task 5. The run took 3 of the 8 allowed decisions:
-
-| Turn | Agent | What it did |
-|---|---|---|
-| 1 | Orchestrator | Chose the scientist, because the model, training and evaluation had to be specified before any code. |
-| 2 | Scientist | Wrote the plan: scaled state equations, MLP 3-64-64-1 with Tanh, RK4, training on short windows with Adam, one free run, RMSE and plot. |
-| 3 | Orchestrator | Chose the executor. |
-| 4 | Executor | Wrote `attempt_1.py` and ran it: exit code 0. |
-| 5 | Orchestrator | Chose finish, because the run had printed a test RMSE. |
-
-Printed by the run (free run over the whole excerpt, in volts):
+## Run
 
 ```
-Epoch 10 / 60 - Loss: 0.030344
-Epoch 20 / 60 - Loss: 0.030818
-Epoch 30 / 60 - Loss: 0.027990
-Epoch 40 / 60 - Loss: 0.027835
-Epoch 50 / 60 - Loss: 0.027449
-Epoch 60 / 60 - Loss: 0.026963
-Network: 2 hidden layers, 64 units each, Tanh activation
-Optimizer: Adam, learning rate = 0.002
-Trajectory window length: 24, batch size: 64
-Epochs completed: 60
-Final training loss: 0.026963
-Training time: 105.41 seconds
-Train RMSE: 0.012576
-Test RMSE: 0.019973
+python main.py
 ```
 
-## Result
+The dialogue is printed turn by turn. At the end the program prints the table of experiments and writes
+`dialogue_log.txt` and `experiments_table.md`. The images are saved in `generated_scripts/run_<date>_<time>/`.
 
-| Quantity | Value |
-|---|---:|
-| Free-run training RMSE (3072 samples) | 0.012576 V |
-| Free-run test RMSE (1024 samples) | 0.019973 V |
-| Zero-prediction training RMSE | 0.0530 V |
-| Zero-prediction test RMSE | 0.0605 V |
-
-The test RMSE is about 3.0 times lower than the zero-prediction baseline, and 1.59 times the training RMSE. The prediction follows the measured output over the whole excerpt without drifting; the largest errors (up to about 0.10 V near 5.9 s) occur where the output amplitude is largest. The plot is `generated_scripts/run_20261010_151626/silverbox_neural_ode_free_run.png`.
-
-## Notes
-
-- The executor kept the scientist's model, scaling, RK4 step and free-run test, but changed some training details: learning rate 0.002 instead of 0.001, no learning-rate schedule, gradient-norm clipping at 1.0, and a 210 s time guard instead of 180 s.
-- The result depends on the scaling advice in the scientist prompt; it is part of the design of the scientist role.
-- This is one run with one seed. The training loss was still falling slowly at epoch 60 and the script used 105 s of the 300 s limit, so longer training might lower the error.
-- The orchestrator finishes as soon as a script has printed a test RMSE and does not judge whether the number is good. The general agent and the repair path were not used in this run.
-- Keep your API key out of the repository. `.env` is listed in `.gitignore`, and so are the copies of `SNLS80mV.mat` inside `generated_scripts/`; the one in the project folder is the source.
+If the run stops early (for example when the API quota ends), `python main.py --resume` continues the run saved in
+`dialogue_log.txt`.

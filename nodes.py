@@ -5,7 +5,8 @@ from agents import (
     executor_agent,
 )
 
-MAX_DECISIONS = 8
+MAX_DECISIONS = 12
+MIN_EXPERIMENTS = 4
 
 
 def get_dialogue(state):
@@ -19,7 +20,7 @@ def add_turn(state, speaker, response):
 
 
 def orchestrator_step(state):
-    # Stop after 8 Orchestrator decisions.
+    # Stop after MAX_DECISIONS Orchestrator decisions.
     if state["decision_count"] >= MAX_DECISIONS:
         return {
             "last_decision": {
@@ -56,26 +57,18 @@ def orchestrator_step(state):
     if role not in ["scientist", "general", "executor", "finish"]:
         role = "scientist"
 
-    # A traceback or non-zero exit code goes to the executor, not general.
+    # A failed tool call goes to the executor, not to the general agent.
     latest = state["dialogue"][-1] if state["dialogue"] else ""
-    if (
-        role == "general"
-        and latest.startswith("[Executor]:")
-        and "Exit code:" in latest
-        and "Exit code: 0" not in latest
-    ):
+    if role == "general" and latest.startswith("[Executor]: Executor could not call"):
         role = "executor"
-        instruction = (
-            "Repair the script that just failed. Read the traceback in the "
-            "dialogue and keep the Scientist's plan unchanged."
-        )
+        instruction = "Call the tool again with corrected settings as JSON integers."
         note = (
-            "\n[Note: the last run failed, so the turn goes to the "
+            "\n[Note: the last tool call failed, so the turn goes to the "
             "executor instead of the general agent.]"
         )
 
-    # Do not finish before a successful run and test RMSE.
-    if role == "finish" and not has_test_rmse(state["dialogue"]):
+    # Do not finish before enough experiments have returned an enhancement.
+    if role == "finish" and count_experiments(state["dialogue"]) < MIN_EXPERIMENTS:
         has_plan = any(
             turn.startswith("[Scientist]:")
             for turn in state["dialogue"]
@@ -84,19 +77,18 @@ def orchestrator_step(state):
         if has_plan:
             role = "executor"
             instruction = (
-                "Run the Python script and print the training and test RMSE. "
-                "Check the shared dialogue and fix any previous errors."
+                "Run another experiment with settings that were not tried yet "
+                "and report its enhancement."
             )
         else:
             role = "scientist"
             instruction = (
-                "Create a clear implementation plan for the Silverbox "
-                "Neural ODE task before the Executor writes code."
+                "Plan the focusing experiments before the Executor calls the tool."
             )
 
         note = (
-            "\n[Note: finish was refused because no successful run has "
-            f"printed a test RMSE yet, so the turn goes to the {role}.]"
+            f"\n[Note: finish was refused because fewer than {MIN_EXPERIMENTS} "
+            f"experiments have returned an enhancement, so the turn goes to the {role}.]"
         )
 
     return {
@@ -157,35 +149,19 @@ def executor_step(state):
     return add_turn(state, "Executor", response)
 
 
-def has_test_rmse(dialogue):
-    # Verify successful execution and a printed test RMSE.
+def count_experiments(dialogue):
+    # Number of executor turns where the tool returned a numeric enhancement.
+    count = 0
     for turn in dialogue:
-        if not turn.startswith("[Executor]:"):
+        if not turn.startswith("[Executor]: Executor called run_focusing"):
             continue
 
-        if "Exit code: 0" not in turn:
-            continue
-
-        if "STDOUT:" not in turn:
-            continue
-
-        stdout = turn.split("STDOUT:", 1)[1].split(
-            "STDERR:", 1
-        )[0]
-
-        for line in stdout.splitlines():
-            line = line.strip().lower()
-
-            if "test rmse" in line and (
-                ":" in line or "=" in line
-            ):
-                # Confirm there is a numeric value after ':' or '='.
-                value = line.replace("=", ":", 1).split(":", 1)[-1].strip()
-
+        for line in turn.splitlines():
+            if line.startswith("Enhancement:"):
                 try:
-                    float(value.split()[0])
-                    return True
-                except (ValueError, IndexError):
-                    continue
+                    float(line.split(":", 1)[1])
+                    count += 1
+                except ValueError:
+                    pass
 
-    return False
+    return count
